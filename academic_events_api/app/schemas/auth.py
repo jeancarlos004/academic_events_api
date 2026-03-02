@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, field_validator
 from typing import Optional
 
 
@@ -12,6 +12,18 @@ class UserBase(BaseModel):
 
 class UserCreate(UserBase):
     password: str
+
+
+class RegisterRequest(UserCreate):
+    rol: str = "usuario"
+
+    @field_validator("rol")
+    @classmethod
+    def validate_rol(cls, v: str):
+        allowed = {"admin", "usuario"}
+        if v not in allowed:
+            raise ValueError("Rol inválido")
+        return v
 
 
 class UserOut(UserBase):
@@ -28,10 +40,6 @@ class UserOut(UserBase):
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
-
-
-class RegisterRequest(UserCreate):
-    pass
 
 
 class TokenResponse(BaseModel):

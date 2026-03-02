@@ -26,7 +26,7 @@ class AuthService:
             nombre=body.nombre,
             email=body.email,
             password_hash=hashed_password,
-            rol="usuario"
+            rol=body.rol
         )
 
         db.add(user)
