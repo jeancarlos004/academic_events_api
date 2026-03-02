@@ -1,7 +1,7 @@
-from pydantic import BaseModel, EmailStr, field_validator
+from pydantic import BaseModel, EmailStr, field_validator, Field, AliasChoices, ConfigDict
 
 class UserCreate(BaseModel):
-    name: str
+    nombre: str = Field(validation_alias=AliasChoices("nombre", "name"))
     email: EmailStr
     password: str
     
@@ -11,21 +11,14 @@ class UserCreate(BaseModel):
         # Verificar longitud mínima y máxima en caracteres
         if len(v) < 6:
             raise ValueError('La contraseña debe tener al menos 6 caracteres')
-        if len(v) > 50:
-            raise ValueError('La contraseña no puede tener más de 50 caracteres')
-        
-        # Asegurar que solo use caracteres ASCII (evita problemas de encoding)
-        try:
-            v.encode('ascii')
-        except UnicodeEncodeError:
-            raise ValueError('La contraseña solo puede contener caracteres ASCII (letras sin acentos, números y símbolos básicos)')
+        if len(v) > 128:
+            raise ValueError('La contraseña no puede tener más de 128 caracteres')
         
         return v
 
 class UserOut(BaseModel):
     id: int
-    name: str
+    nombre: str
     email: EmailStr
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

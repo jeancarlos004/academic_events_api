@@ -1,4 +1,5 @@
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 from fastapi import HTTPException, status
 
 from app.models.user import User
@@ -29,7 +30,14 @@ class AuthService:
         )
 
         db.add(user)
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="El correo ya está registrado"
+            )
         db.refresh(user)
 
         return user
