@@ -1,5 +1,6 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import func
+from sqlalchemy.orm import selectinload
 
 from app.models.registration import Registration
 from app.models.event import Event
@@ -59,7 +60,12 @@ class RegistrationService:
         event = db.query(Event).filter(Event.id == event_id).first()
         if not event:
             raise NotFoundException("Evento")
-        return db.query(Registration).filter(Registration.evento_id == event_id).all()
+        return (
+            db.query(Registration)
+            .options(selectinload(Registration.usuario))
+            .filter(Registration.evento_id == event_id)
+            .all()
+        )
 
     @staticmethod
     def mark_attendance(db: Session, registration_id: int, asistencia: bool) -> Registration:

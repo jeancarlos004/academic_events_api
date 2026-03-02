@@ -3,9 +3,16 @@ from sqlalchemy.orm import sessionmaker, DeclarativeBase
 from app.core.config import settings
 
 
+database_url = settings.DATABASE_URL
+
+connect_args = {}
+if database_url.startswith("sqlite"):
+    connect_args = {"check_same_thread": False}  # Solo SQLite
+
 engine = create_engine(
-    settings.DATABASE_URL,
-    connect_args={"check_same_thread": False},  # Solo SQLite
+    database_url,
+    connect_args=connect_args,
+    pool_pre_ping=True,
     echo=False,
 )
 

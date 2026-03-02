@@ -9,7 +9,7 @@ from app.core.security import get_current_user, require_admin
 from app.services.event_service import EventService
 from app.services.registration_service import RegistrationService
 from app.schemas.event import EventCreate, EventUpdate, EventOut, PaginatedEvents
-from app.schemas.registration import RegistrationOut, RegistrationWithEvent
+from app.schemas.registration import RegistrationOut, RegistrationWithEvent, RegistrationAdminOut
 
 router = APIRouter(prefix="/events", tags=["Eventos"])
 
@@ -88,7 +88,7 @@ def cancel_registration(
     return {"message": "Inscripción cancelada correctamente"}
 
 
-@router.get("/{id}/registrations", response_model=list[RegistrationOut])
+@router.get("/{id}/registrations", response_model=list[RegistrationAdminOut])
 def get_event_registrations(
     id: int,
     db: Session = Depends(get_db),

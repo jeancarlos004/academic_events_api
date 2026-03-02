@@ -72,6 +72,8 @@ class EventOut(BaseModel):
     hora: str
     lugar: str
     cupos: int
+    inscritos: int = 0
+    cupos_disponibles: int = 0
     tipo: str
     estado: str
 
