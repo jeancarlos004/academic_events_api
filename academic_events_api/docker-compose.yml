@@ -1,0 +1,15 @@
+version: "3.9"
+
+services:
+  api:
+    build: .
+    container_name: academic_events_api
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=sqlite:///./academic_events.db
+      - SECRET_KEY=supersecretkey_change_in_production_min32chars
+      - REFRESH_SECRET_KEY=refresh_supersecretkey_change_in_production_min32chars
+    volumes:
+      - ./academic_events.db:/app/academic_events.db
+    restart: unless-stopped
