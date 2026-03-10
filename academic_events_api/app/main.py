@@ -164,3 +164,8 @@ def chat(body: dict):
 
     return {"response": result.get("response", "")}
 
+
+# Exportar la app principal para evitar confusión de entrypoints.
+# Si arrancas uvicorn apuntando a academic_events_api.app.main:app, igual tendrás /api/v1 y todos los routers.
+from academic_events_api.main import app as app  # noqa: E402,F401
+

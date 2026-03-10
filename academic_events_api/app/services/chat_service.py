@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import re
+from collections import Counter
 from datetime import date, datetime, time
 from io import BytesIO
 from typing import Optional
@@ -19,6 +22,7 @@ from reportlab.platypus import Paragraph, Preformatted, SimpleDocTemplate, Space
 
 from app.core.config import settings
 from app.exceptions.app_exceptions import BadRequestException
+from app.models.chat_conversation_nlp import ChatConversationNLP
 from app.models.chat_message import ChatMessage
 
 
@@ -26,6 +30,111 @@ logger = logging.getLogger(__name__)
 
 
 class ChatService:
+    _ES_STOPWORDS = {
+        "el",
+        "la",
+        "los",
+        "las",
+        "un",
+        "una",
+        "unos",
+        "unas",
+        "y",
+        "o",
+        "de",
+        "del",
+        "al",
+        "en",
+        "por",
+        "para",
+        "con",
+        "sin",
+        "sobre",
+        "a",
+        "e",
+        "u",
+        "que",
+        "como",
+        "cuando",
+        "donde",
+        "cual",
+        "cuales",
+        "quien",
+        "quienes",
+        "es",
+        "son",
+        "ser",
+        "fue",
+        "fueron",
+        "era",
+        "eran",
+        "se",
+        "su",
+        "sus",
+        "mi",
+        "mis",
+        "tu",
+        "tus",
+        "ya",
+        "no",
+        "si",
+        "más",
+        "mas",
+        "menos",
+        "muy",
+        "también",
+        "tambien",
+        "pero",
+        "porque",
+        "qué",
+        "que",
+        "cómo",
+        "como",
+    }
+
+    _EN_STOPWORDS = {
+        "the",
+        "a",
+        "an",
+        "and",
+        "or",
+        "to",
+        "of",
+        "in",
+        "on",
+        "for",
+        "with",
+        "without",
+        "at",
+        "by",
+        "from",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "it",
+        "this",
+        "that",
+        "these",
+        "those",
+        "as",
+        "not",
+        "no",
+        "yes",
+        "very",
+        "also",
+        "but",
+        "because",
+        "what",
+        "how",
+        "when",
+        "where",
+        "who",
+        "which",
+    }
+
     @staticmethod
     async def _ask_tinyllama(question: str) -> str:
         timeout = httpx.Timeout(connect=5.0, read=120.0, write=10.0, pool=5.0)
@@ -169,6 +278,179 @@ class ChatService:
         return answer.strip()
 
     @staticmethod
+    def _build_nlp_source_text(messages: list[ChatMessage]) -> str:
+        parts: list[str] = []
+        for m in messages:
+            ans = (m.answer or "").strip()
+            if ans:
+                parts.append(ans)
+        return "\n\n".join(parts).strip()
+
+    @staticmethod
+    def _extract_keywords(text: str, limit: int = 12) -> list[str]:
+        if not isinstance(text, str) or not text.strip():
+            return []
+
+        tokens = re.findall(r"[a-zA-ZáéíóúñüÁÉÍÓÚÑÜ]{3,}", text.lower())
+        stop = ChatService._ES_STOPWORDS | ChatService._EN_STOPWORDS
+        filtered = [t for t in tokens if t not in stop]
+        if not filtered:
+            return []
+
+        counts = Counter(filtered)
+        return [w for (w, _) in counts.most_common(limit)]
+
+    @staticmethod
+    def _extract_keywords_spacy_nltk(text: str, limit: int = 12) -> list[str]:
+        if not isinstance(text, str) or not text.strip():
+            return []
+
+        try:
+            import spacy
+            from nltk import FreqDist
+        except Exception:
+            return []
+
+        # Stopwords (si NLTK stopwords no está disponible, usamos las internas)
+        stop: set[str] = set()
+        try:
+            from nltk.corpus import stopwords
+
+            stop = set(stopwords.words("spanish")) | set(stopwords.words("english"))
+        except Exception:
+            stop = ChatService._ES_STOPWORDS | ChatService._EN_STOPWORDS
+
+        # Intentamos cargar un modelo español; si no existe, usamos blank("es")
+        try:
+            nlp = spacy.load("es_core_news_sm")
+        except Exception:
+            nlp = spacy.blank("es")
+
+        doc = nlp(text)
+
+        tokens: list[str] = []
+        for t in doc:
+            if t.is_space or t.is_punct or t.like_num:
+                continue
+
+            raw = (t.lemma_ or t.text or "").strip().lower()
+            if len(raw) < 3:
+                continue
+            if raw in stop:
+                continue
+            # Evitar tokens con caracteres raros
+            if not re.fullmatch(r"[a-záéíóúñü]+", raw):
+                continue
+            tokens.append(raw)
+
+        if not tokens:
+            return []
+
+        fd = FreqDist(tokens)
+        return [w for (w, _) in fd.most_common(limit)]
+
+    @staticmethod
+    def _analyze_sentiment_textblob(text: str) -> tuple[Optional[str], Optional[float], Optional[float]]:
+        if not isinstance(text, str) or not text.strip():
+            return None, None, None
+        try:
+            from textblob import TextBlob
+        except Exception:
+            return None, None, None
+
+        try:
+            blob = TextBlob(text)
+            polarity = float(blob.sentiment.polarity)
+            subjectivity = float(blob.sentiment.subjectivity)
+        except Exception:
+            return None, None, None
+
+        if polarity > 0.1:
+            label = "positivo"
+        elif polarity < -0.1:
+            label = "negativo"
+        else:
+            label = "neutral"
+
+        return label, polarity, subjectivity
+
+    @staticmethod
+    def _try_transformers_summarize_and_translate(text: str, target_lang: str) -> tuple[Optional[str], Optional[str]]:
+        if not isinstance(text, str) or not text.strip():
+            return None, None
+
+        try:
+            from transformers import pipeline
+        except Exception:
+            return None, None
+
+        # Resumen (modelo liviano, puede requerir descarga). Si falla, devolvemos None.
+        summary: Optional[str] = None
+        try:
+            summarizer = pipeline(
+                "summarization",
+                model="sshleifer/distilbart-cnn-12-6",
+            )
+            out = summarizer(text[:4000], max_length=180, min_length=60, do_sample=False)
+            if isinstance(out, list) and out and isinstance(out[0], dict):
+                summary = (out[0].get("summary_text") or "").strip() or None
+        except Exception:
+            summary = None
+
+        if not summary:
+            return None, None
+
+        lang = (target_lang or "").strip() or "en"
+        translation: Optional[str] = None
+        try:
+            # Traducción desde ES -> target. Si el resumen no está en ES (por el modelo), igual traduce.
+            if lang == "en":
+                model_name = "Helsinki-NLP/opus-mt-es-en"
+            elif lang == "pt":
+                model_name = "Helsinki-NLP/opus-mt-es-pt"
+            elif lang == "fr":
+                model_name = "Helsinki-NLP/opus-mt-es-fr"
+            elif lang == "it":
+                model_name = "Helsinki-NLP/opus-mt-es-it"
+            else:
+                model_name = "Helsinki-NLP/opus-mt-es-en"
+
+            translator = pipeline("translation", model=model_name)
+            out_t = translator(summary, max_length=220)
+            if isinstance(out_t, list) and out_t and isinstance(out_t[0], dict):
+                translation = (out_t[0].get("translation_text") or "").strip() or None
+        except Exception:
+            translation = None
+
+        return summary, translation
+
+    @staticmethod
+    async def _summarize_and_translate_text(text: str, target_lang: str) -> tuple[str, str]:
+        lang = (target_lang or "").strip() or "en"
+        prompt = (
+            "A partir del siguiente TEXTO, genera un resumen en español y su traducción. "
+            "Devuelve ÚNICAMENTE un JSON válido con esta forma exacta:\n"
+            "{\"summary_es\": \"...\", \"translation\": \"...\", \"translation_lang\": \"...\"}\n\n"
+            "Reglas:\n"
+            "- summary_es: 5 a 10 líneas máximo, claro y profesional.\n"
+            f"- translation: traducción de summary_es al idioma '{lang}', sin explicaciones.\n"
+            f"- translation_lang: '{lang}'.\n\n"
+            "TEXTO:\n"
+            f"{text}"
+        )
+
+        raw = await ChatService._ask_tinyllama(prompt)
+        try:
+            data = json.loads(raw)
+            summary = (data.get("summary_es") or "").strip()
+            translation = (data.get("translation") or "").strip()
+        except Exception:
+            summary = raw.strip()
+            translation = ""
+
+        return summary, translation
+
+    @staticmethod
     async def ask_and_store(
         db: Session,
         question: str,
@@ -190,6 +472,92 @@ class ChatService:
         db.commit()
         db.refresh(msg)
         return msg
+
+    @staticmethod
+    def get_conversation_nlp(db: Session, conversation_id: str) -> Optional[ChatConversationNLP]:
+        conv_id = (conversation_id or "").strip()
+        if not conv_id:
+            raise BadRequestException("conversation_id inválido")
+        return db.query(ChatConversationNLP).filter(ChatConversationNLP.conversation_id == conv_id).first()
+
+    @staticmethod
+    async def generate_conversation_nlp(
+        db: Session,
+        conversation_id: str,
+        user_id: Optional[int],
+        is_admin: bool,
+        target_lang: str = "en",
+        force: bool = False,
+    ) -> ChatConversationNLP:
+        conv_id = (conversation_id or "").strip()
+        if not conv_id:
+            raise BadRequestException("conversation_id inválido")
+
+        existing = db.query(ChatConversationNLP).filter(ChatConversationNLP.conversation_id == conv_id).first()
+        if existing is not None and not force:
+            return existing
+
+        msgs = ChatService.get_conversation_messages(
+            db,
+            conversation_id=conv_id,
+            user_id=user_id,
+            is_admin=is_admin,
+        )
+        if not msgs:
+            raise BadRequestException("No hay mensajes para analizar")
+
+        source_text = ChatService._build_nlp_source_text(msgs)
+        if not source_text:
+            raise BadRequestException("No hay texto de respuesta del chatbot para analizar")
+
+        # Optimización: recortar texto para reducir latencia/costo
+        max_chars = 6000
+        if len(source_text) > max_chars:
+            source_text = source_text[:max_chars]
+
+        # 1) Resumen+traducción: intentamos con Transformers (si hay modelos), si falla usamos LLM.
+        summary_t, translation_t = ChatService._try_transformers_summarize_and_translate(source_text, target_lang=target_lang)
+        if summary_t:
+            summary = summary_t
+            translation = translation_t or ""
+        else:
+            summary, translation = await ChatService._summarize_and_translate_text(source_text, target_lang=target_lang)
+
+        # 2) Keywords: intentamos spaCy+NLTK, fallback a método simple.
+        keywords = ChatService._extract_keywords_spacy_nltk(source_text)
+        if not keywords:
+            keywords = ChatService._extract_keywords(source_text)
+
+        # 3) Sentimiento (TextBlob)
+        s_label, s_pol, s_subj = ChatService._analyze_sentiment_textblob(source_text)
+
+        if existing is None:
+            row = ChatConversationNLP(
+                conversation_id=conv_id,
+                source_text=source_text,
+                summary=summary,
+                keywords=json.dumps(keywords, ensure_ascii=False),
+                translation_lang=(target_lang or "").strip() or None,
+                translation=translation,
+                sentiment_label=s_label,
+                sentiment_polarity=s_pol,
+                sentiment_subjectivity=s_subj,
+            )
+            db.add(row)
+        else:
+            row = existing
+            row.source_text = source_text
+            row.summary = summary
+            row.keywords = json.dumps(keywords, ensure_ascii=False)
+            row.translation_lang = (target_lang or "").strip() or None
+            row.translation = translation
+            row.sentiment_label = s_label
+            row.sentiment_polarity = s_pol
+            row.sentiment_subjectivity = s_subj
+
+        db.commit()
+        db.refresh(row)
+        return row
 
     @staticmethod
     def list_conversations(
@@ -284,10 +652,30 @@ class ChatService:
         body_style = styles["BodyText"].clone("chat_body")
         body_style.fontSize = 10
         body_style.leading = 13
+        body_style.wordWrap = "LTR"
+        body_style.splitLongWords = 1
 
         pre_style = styles["Code"].clone("chat_pre")
         pre_style.fontSize = 9
         pre_style.leading = 11
+
+        def _p(text: str) -> Paragraph:
+            from xml.sax.saxutils import escape
+
+            raw = (text or "").strip()
+            # Insertar puntos de corte en tokens muy largos para evitar que se salgan del recuadro
+            parts: list[str] = []
+            for tok in raw.split():
+                if len(tok) > 50:
+                    chunks = [tok[i : i + 25] for i in range(0, len(tok), 25)]
+                    parts.append("\u200b".join(chunks))
+                else:
+                    parts.append(tok)
+            raw = " ".join(parts)
+
+            safe = escape(raw)
+            safe = safe.replace("\n", "<br/>")
+            return Paragraph(safe or "—", body_style)
 
         story = []
 
@@ -341,11 +729,11 @@ class ChatService:
                 [
                     [
                         Paragraph("<b>Pregunta</b>", label_style),
-                        Preformatted(question_for_report, pre_style),
+                        _p(question_for_report),
                     ],
                     [
                         Paragraph("<b>Respuesta</b>", label_style),
-                        Preformatted((m.answer or "").strip(), pre_style),
+                        _p((m.answer or "").strip()),
                     ],
                 ],
                 colWidths=[1.2 * inch, 5.55 * inch],
@@ -356,6 +744,7 @@ class ChatService:
                         ("BOX", (0, 0), (-1, -1), 0.6, colors.lightgrey),
                         ("INNERGRID", (0, 0), (-1, -1), 0.3, colors.lightgrey),
                         ("BACKGROUND", (0, 0), (0, -1), colors.whitesmoke),
+                        ("WORDWRAP", (1, 0), (1, -1), "LTR"),
                         ("VALIGN", (0, 0), (-1, -1), "TOP"),
                         ("LEFTPADDING", (0, 0), (-1, -1), 8),
                         ("RIGHTPADDING", (0, 0), (-1, -1), 8),

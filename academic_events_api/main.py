@@ -13,6 +13,7 @@ from app.routers import auth, users, events, registrations, reports, chat
 
 # Importar modelos para que SQLAlchemy registre las tablas antes de create_all
 from app.models.chat_message import ChatMessage  # noqa: F401
+from app.models.chat_conversation_nlp import ChatConversationNLP  # noqa: F401
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -28,6 +29,20 @@ try:
             conn.execute(text("ALTER TABLE chat_messages ADD COLUMN conversation_id VARCHAR(36)"))
 except Exception:
     logger.exception("No se pudo aplicar migración ligera para chat_messages.conversation_id")
+
+try:
+    insp = inspect(engine)
+    if insp.has_table("chat_conversation_nlp"):
+        cols = {c.get("name") for c in insp.get_columns("chat_conversation_nlp")}
+        with engine.begin() as conn:
+            if "sentiment_label" not in cols:
+                conn.execute(text("ALTER TABLE chat_conversation_nlp ADD COLUMN sentiment_label VARCHAR(32)"))
+            if "sentiment_polarity" not in cols:
+                conn.execute(text("ALTER TABLE chat_conversation_nlp ADD COLUMN sentiment_polarity FLOAT"))
+            if "sentiment_subjectivity" not in cols:
+                conn.execute(text("ALTER TABLE chat_conversation_nlp ADD COLUMN sentiment_subjectivity FLOAT"))
+except Exception:
+    logger.exception("No se pudo aplicar migración ligera para chat_conversation_nlp.sentiment_*")
 
 app = FastAPI(
     title="API de Gestión de Eventos Académicos",

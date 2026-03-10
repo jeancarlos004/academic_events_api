@@ -56,3 +56,22 @@ class PaginatedChatMessages(BaseModel):
     page: int
     page_size: int
     results: list[ChatMessageOut]
+
+
+class ChatConversationNLPGenerateRequest(BaseModel):
+    target_lang: str = Field(default="en", min_length=2, max_length=16)
+    force: bool = False
+
+
+class ChatConversationNLPOut(BaseModel):
+    conversation_id: str
+    source_text: str
+    summary: Optional[str] = None
+    keywords: list[str] = Field(default_factory=list)
+    translation_lang: Optional[str] = None
+    translation: Optional[str] = None
+    sentiment_label: Optional[str] = None
+    sentiment_polarity: Optional[float] = None
+    sentiment_subjectivity: Optional[float] = None
+    created_at: datetime
+    updated_at: datetime

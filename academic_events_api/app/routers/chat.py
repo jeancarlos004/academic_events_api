@@ -1,7 +1,8 @@
+import json
 from datetime import date
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
@@ -11,6 +12,8 @@ from app.schemas.chat import (
     ChatAskRequest,
     ChatAskResponse,
     ChatConversationOut,
+    ChatConversationNLPGenerateRequest,
+    ChatConversationNLPOut,
     ChatMessageOut,
     PaginatedChatConversations,
     PaginatedChatMessages,
@@ -177,3 +180,99 @@ def download_conversation_report(
         media_type="application/pdf",
         headers={"Content-Disposition": f"inline; filename=conversacion_{conversation_id}.pdf"},
     )
+
+
+@router.get("/conversations/{conversation_id}/nlp", response_model=ChatConversationNLPOut)
+def get_conversation_nlp(
+    conversation_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    is_admin = getattr(current_user, "rol", None) == "admin"
+    # Validar acceso a la conversación: si no es admin, debe pertenecer al usuario
+    msgs = ChatService.get_conversation_messages(
+        db,
+        conversation_id=conversation_id,
+        user_id=current_user.id if current_user else None,
+        is_admin=is_admin,
+    )
+    if not msgs:
+        raise HTTPException(status_code=404, detail="Conversación no encontrada")
+
+    row = ChatService.get_conversation_nlp(db, conversation_id=conversation_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Análisis PNL no encontrado. Genera el análisis primero.")
+
+    try:
+        keywords = []
+        if isinstance(row.keywords, str) and row.keywords.strip():
+            parsed = json.loads(row.keywords)
+            if isinstance(parsed, list):
+                keywords = [str(x) for x in parsed]
+    except Exception:
+        keywords = []
+
+    return {
+        "conversation_id": row.conversation_id,
+        "source_text": row.source_text,
+        "summary": row.summary,
+        "keywords": keywords,
+        "translation_lang": row.translation_lang,
+        "translation": row.translation,
+        "sentiment_label": row.sentiment_label,
+        "sentiment_polarity": row.sentiment_polarity,
+        "sentiment_subjectivity": row.sentiment_subjectivity,
+        "created_at": row.created_at,
+        "updated_at": row.updated_at,
+    }
+
+
+@router.post("/conversations/{conversation_id}/nlp", response_model=ChatConversationNLPOut)
+async def generate_conversation_nlp(
+    conversation_id: str,
+    body: ChatConversationNLPGenerateRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    is_admin = getattr(current_user, "rol", None) == "admin"
+
+    msgs = ChatService.get_conversation_messages(
+        db,
+        conversation_id=conversation_id,
+        user_id=current_user.id if current_user else None,
+        is_admin=is_admin,
+    )
+    if not msgs:
+        raise HTTPException(status_code=404, detail="Conversación no encontrada")
+
+    row = await ChatService.generate_conversation_nlp(
+        db,
+        conversation_id=conversation_id,
+        user_id=current_user.id if current_user else None,
+        is_admin=is_admin,
+        target_lang=body.target_lang,
+        force=bool(body.force),
+    )
+
+    keywords: list[str] = []
+    try:
+        if isinstance(row.keywords, str) and row.keywords.strip():
+            parsed = json.loads(row.keywords)
+            if isinstance(parsed, list):
+                keywords = [str(x) for x in parsed]
+    except Exception:
+        keywords = []
+
+    return {
+        "conversation_id": row.conversation_id,
+        "source_text": row.source_text,
+        "summary": row.summary,
+        "keywords": keywords,
+        "translation_lang": row.translation_lang,
+        "translation": row.translation,
+        "sentiment_label": row.sentiment_label,
+        "sentiment_polarity": row.sentiment_polarity,
+        "sentiment_subjectivity": row.sentiment_subjectivity,
+        "created_at": row.created_at,
+        "updated_at": row.updated_at,
+    }
