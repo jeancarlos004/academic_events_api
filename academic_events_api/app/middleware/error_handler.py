@@ -1,4 +1,4 @@
-from fastapi import Request, status
+from fastapi import Request, status, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from sqlalchemy.exc import SQLAlchemyError
@@ -7,6 +7,18 @@ import logging
 logger = logging.getLogger(__name__)
 
 class ErrorHandlerMiddleware:
+    @staticmethod
+    async def http_exception_handler(request: Request, exc: HTTPException):
+        logger.warning(
+            "HTTPException: %s %s status=%s detail=%s",
+            request.method,
+            str(request.url),
+            exc.status_code,
+            exc.detail,
+            exc_info=True,
+        )
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
     @staticmethod
     async def validation_exception_handler(request: Request, exc: RequestValidationError):
         errors = [{"campo": " -> ".join(str(e) for e in err["loc"]), "mensaje": err["msg"]} for err in exc.errors()]
